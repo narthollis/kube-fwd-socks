@@ -1,3 +1,5 @@
+// https://www.rfc-editor.org/rfc/rfc1928
+
 pub const VERSION: u8 = 5;
 
 pub const AUTH_NOT_REQUIRED: u8 = 0x00;
@@ -7,65 +9,103 @@ pub const AUTH_GSSAPI: u8 = 0x01;
 pub const AUTH_USER_PASS: u8 = 0x02;
 pub const AUTH_NONE: u8 = 0xFF;
 
+pub const CMD_CONNECT: u8 = 0x01;
+pub const CMD_BIND: u8 = 0x02;
+pub const CMD_UDP_ASSOCIATE: u8 = 0x3;
+
+pub const ATYPE_IPV4: u8 = 0x01;
+pub const ATYPE_IPV6: u8 = 0x04;
+pub const ATYPE_DNS: u8 = 0x03;
+
+pub const RESP_SUCCEEDED: u8 = 0x00;
+pub const RESP_GENERAL_FAILURE: u8 = 0x01;
+pub const RESP_DENIED: u8 = 0x02;
+pub const RESP_NETWORK_UNREACHABLE: u8 = 0x03;
+pub const RESP_HOST_UNREACHABLE: u8 = 0x04;
+pub const RESP_CONNECTION_REFUSED: u8 = 0x05;
+pub const RESP_TTL_EXPIRED: u8 = 0x06;
+pub const RESP_COMMAND_NOT_SUPPORTED: u8 = 0x07;
+pub const RESP_ADDRESS_NOT_SUPPORTED: u8 = 0x08;
+
 pub struct AuthResponse {
     pub method: u8,
 }
 
 impl AuthResponse {
     pub fn not_required() -> AuthResponse {
-        AuthResponse { method: AUTH_NOT_REQUIRED }
+        AuthResponse {
+            method: AUTH_NOT_REQUIRED,
+        }
     }
-        pub fn none() -> AuthResponse {
+
+    pub fn none() -> AuthResponse {
         AuthResponse { method: AUTH_NONE }
     }
-}
 
-impl From<AuthResponse> for [u8; 2] {
-    fn from(value: AuthResponse) -> Self {
-        [VERSION, value.method]
+    pub fn to_buf(&self) -> [u8; 2] {
+        [VERSION, self.method]
     }
 }
 
+#[derive(Debug)]
+pub enum Address {
+    IPv4([u8; 4]),
+    IPv6([u8; 16]),
+    DNS(String),
+}
 
-//pub enum Address {
-//    IPv4([u8; 4]),
-//    IPv6([u8; 16]),
-//    DNS(String),
-//}
-//
-//pub struct Response {
-//    pub version: u8,
-//    pub reply: u8,
-//    pub address: Address,
-//    pub 
-//    
-//    pub dest_port: u16,
-//    pub dest_ip: [u8; 4],
-//}
-//
-//impl Response {
-//    pub fn granted(dest_port: u16, dest_ip: [u8; 4]) -> Response {
-//        Response {
-//            version: RESP_VERSION,
-//            result: RESP_CODE_GRANTED,
-//            dest_port,
-//            dest_ip,
-//        }
-//    }
-//    pub fn rejected_or_failed(dest_port: u16, dest_ip: [u8; 4]) -> Response {
-//        Response {
-//            version: RESP_VERSION,
-//            result: RESP_CODE_REJECT_OR_FAILED,
-//            dest_port,
-//            dest_ip,
-//        }
-//    }
-//}
-//
-//impl From<Response> for Vec<u8> {
-//    fn from(value: Response) -> Self {
-//        let p = value.dest_port.to_be_bytes();
-//
-//        [value.version, value.result, p[0], p[1], value.dest_ip[0], value.dest_ip[1], value.dest_ip[2], value.dest_ip[3]]
-//    }
-//}
+#[derive(Debug)]
+pub struct Response {
+    pub reply: u8,
+    pub address: Address,
+    pub port: u16,
+}
+
+impl Response {
+    pub fn success(address: Address, port: u16) -> Response {
+        Response {
+            reply: RESP_SUCCEEDED,
+            address,
+            port,
+        }
+    }
+    pub fn geneal_failure() -> Response {
+        Response {
+            reply: RESP_GENERAL_FAILURE,
+            address: Address::IPv4([0, 0, 0, 0]),
+            port: 0,
+        }
+    }
+
+    pub fn unsupported_address() -> Response {
+        Response {
+            reply: RESP_ADDRESS_NOT_SUPPORTED,
+            address: Address::IPv4([0, 0, 0, 0]),
+            port: 0,
+        }
+    }
+
+    pub(crate) fn unsupported_command() -> Response {
+        Response {
+            reply: RESP_COMMAND_NOT_SUPPORTED,
+            address: Address::IPv4([0, 0, 0, 0]),
+            port: 0,
+        }
+    }
+
+    pub fn to_buf(&self) -> Vec<u8> {
+        [
+            vec![VERSION, self.reply, 0x0 as u8],
+            match &self.address {
+                Address::IPv4(a) => [vec![ATYPE_IPV4], Vec::from(*a)].concat(),
+
+                Address::IPv6(a) => [vec![ATYPE_IPV6], Vec::from(*a)].concat(),
+                Address::DNS(a) => {
+                    [vec![ATYPE_DNS, a.len() as u8], Vec::from(a.as_bytes())].concat()
+                }
+            },
+            Vec::from(self.port.to_be_bytes()),
+        ]
+        .concat()
+    }
+}
