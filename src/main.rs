@@ -1,11 +1,13 @@
+#![feature(async_fn_in_trait)]
+
 pub(crate) mod socks;
 
+use futures::{StreamExt, TryStreamExt};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
-use futures::{StreamExt, TryStreamExt};
 
-use tracing::{trace, info, error, info_span, Instrument};
+use tracing::{error, info, info_span, trace, Instrument};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let socket = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 1080))).await?;
 
     info!(address = ?socket.local_addr()?, "Bound, Ctrl+C to stop");
-    
+
     TcpListenerStream::new(socket)
         .take_until(tokio::signal::ctrl_c())
         .try_for_each(|client_conn| async {
@@ -45,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 .in_current_span(),
             );
-            
+
             Ok(())
         })
         .await?;

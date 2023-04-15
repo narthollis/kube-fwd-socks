@@ -1,11 +1,15 @@
 // https://www.rfc-editor.org/rfc/rfc1928
 
+use anyhow::Ok;
+use int_enum::IntEnum;
+use tokio::io::AsyncWriteExt;
+
+use super::{Request, Response};
+
 pub const VERSION: u8 = 5;
 
 pub const AUTH_NOT_REQUIRED: u8 = 0x00;
-#[allow(dead_code)]
 pub const AUTH_GSSAPI: u8 = 0x01;
-#[allow(dead_code)]
 pub const AUTH_USER_PASS: u8 = 0x02;
 pub const AUTH_NONE: u8 = 0xFF;
 
@@ -18,32 +22,96 @@ pub const ATYPE_IPV6: u8 = 0x04;
 pub const ATYPE_DNS: u8 = 0x03;
 
 pub const RESP_SUCCEEDED: u8 = 0x00;
+#[allow(dead_code)]
 pub const RESP_GENERAL_FAILURE: u8 = 0x01;
+#[allow(dead_code)]
 pub const RESP_DENIED: u8 = 0x02;
+#[allow(dead_code)]
 pub const RESP_NETWORK_UNREACHABLE: u8 = 0x03;
+#[allow(dead_code)]
 pub const RESP_HOST_UNREACHABLE: u8 = 0x04;
+#[allow(dead_code)]
 pub const RESP_CONNECTION_REFUSED: u8 = 0x05;
+#[allow(dead_code)]
 pub const RESP_TTL_EXPIRED: u8 = 0x06;
 pub const RESP_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 pub const RESP_ADDRESS_NOT_SUPPORTED: u8 = 0x08;
 
+#[derive(Debug, thiserror::Error)]
+pub enum Errors {
+    #[error("Unsupported Command {0}")]
+    UnsupportedCommand(u8),
+    #[error("Unsupported Address Type {0}")]
+    UnsupportedAddressType(u8),
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, int_enum::IntEnum)]
+pub enum AuthMethods {
+    NotRequired = AUTH_NOT_REQUIRED,
+    Gssapi = AUTH_GSSAPI,
+    Basic = AUTH_USER_PASS,
+    None = AUTH_NONE,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, int_enum::IntEnum)]
+pub enum Command {
+    Connect = CMD_CONNECT,
+    Bind = CMD_BIND,
+    UdpAssociate = CMD_UDP_ASSOCIATE,
+}
+
+pub struct AuthRequest {
+    requests: Vec<AuthMethods>,
+}
+
+impl AuthRequest {
+    pub fn contains(&self, method: &AuthMethods) -> bool {
+        self.requests.contains(method)
+    }
+}
+
+impl Request for AuthRequest {
+    async fn parse(stream: &mut (impl tokio::io::AsyncReadExt + Unpin)) -> anyhow::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let method_count = stream.read_u8().await?;
+        let mut buf: Vec<u8> = vec![0; method_count as usize];
+        stream.read_exact(&mut buf).await?;
+
+        let requests = buf
+            .into_iter()
+            .filter_map(|v| AuthMethods::from_int(v).ok())
+            .collect();
+
+        Ok(AuthRequest { requests })
+    }
+}
+
 pub struct AuthResponse {
-    pub method: u8,
+    pub method: AuthMethods,
 }
 
 impl AuthResponse {
     pub fn not_required() -> AuthResponse {
         AuthResponse {
-            method: AUTH_NOT_REQUIRED,
+            method: AuthMethods::NotRequired,
         }
     }
 
     pub fn none() -> AuthResponse {
-        AuthResponse { method: AUTH_NONE }
+        AuthResponse {
+            method: AuthMethods::None,
+        }
     }
+}
 
-    pub fn to_buf(&self) -> [u8; 2] {
-        [VERSION, self.method]
+impl Response for AuthResponse {
+    async fn send(&self, stream: &mut (impl tokio::io::AsyncWrite + Unpin)) -> anyhow::Result<()> {
+        stream.write_all(&[VERSION, self.method as u8]).await?;
+        Ok(())
     }
 }
 
@@ -51,61 +119,136 @@ impl AuthResponse {
 pub enum Address {
     IPv4([u8; 4]),
     IPv6([u8; 16]),
-    DNS(String),
+    Dns(String),
+}
+
+impl Response for Address {
+    async fn send(&self, stream: &mut (impl tokio::io::AsyncWrite + Unpin)) -> anyhow::Result<()> {
+        let buf = match &self {
+            Address::IPv4(a) => [vec![ATYPE_IPV4], Vec::from(*a)].concat(),
+
+            Address::IPv6(a) => [vec![ATYPE_IPV6], Vec::from(*a)].concat(),
+            Address::Dns(a) => [vec![ATYPE_DNS, a.len() as u8], Vec::from(a.as_bytes())].concat(),
+        };
+        stream.write_all(&buf).await?;
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
-pub struct Response {
+pub struct CommandRequest {
+    pub command: Command,
+    pub address: Address,
+    pub port: u16,
+}
+
+impl Request for CommandRequest {
+    async fn parse(stream: &mut (impl tokio::io::AsyncReadExt + Unpin)) -> anyhow::Result<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        let ver = stream.read_u8().await?;
+        if ver != VERSION {
+            return Err(super::Errors::UnsupportedVersion(ver).into());
+        }
+
+        let command = Command::from_int(stream.read_u8().await?)
+            .map_err(|e| Errors::UnsupportedCommand(e.value()))?;
+
+        // This next byte is very literally a unused reserved byte, just read and discard
+        let _rsv = stream.read_u8().await?;
+
+        let atype = stream.read_u8().await?;
+        let address = match atype {
+            ATYPE_IPV4 => {
+                let mut addr = [0; 4];
+                stream.read_exact(&mut addr).await?;
+                Ok(Address::IPv4(addr))
+            }
+            ATYPE_IPV6 => {
+                let mut addr = [0; 16];
+                stream.read_exact(&mut addr).await?;
+                Ok(Address::IPv6(addr))
+            }
+            ATYPE_DNS => {
+                let size = stream.read_u8().await?;
+                let mut buf = vec![0; size as usize];
+                stream.read_exact(&mut buf).await?;
+
+                Ok(Address::Dns(String::from_utf8(buf)?))
+            }
+            t => Err(Errors::UnsupportedAddressType(t).into()),
+        }?;
+
+        let port = stream.read_u16().await?;
+
+        Ok(CommandRequest {
+            command,
+            address,
+            port,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct ConnectResponse {
     pub reply: u8,
     pub address: Address,
     pub port: u16,
 }
 
-impl Response {
-    pub fn success(address: Address, port: u16) -> Response {
-        Response {
+impl Response for ConnectResponse {
+    async fn send(&self, stream: &mut (impl tokio::io::AsyncWrite + Unpin)) -> anyhow::Result<()> {
+        stream.write_all(&[VERSION, self.reply, 0x0_u8]).await?;
+        self.address.send(stream).await?;
+        stream
+            .write_all(&Vec::from(self.port.to_be_bytes()))
+            .await?;
+
+        Ok(())
+    }
+}
+
+impl ConnectResponse {
+    pub fn success(address: Address, port: u16) -> ConnectResponse {
+        ConnectResponse {
             reply: RESP_SUCCEEDED,
             address,
             port,
         }
     }
-    pub fn geneal_failure() -> Response {
-        Response {
+    #[allow(dead_code)]
+    pub fn geneal_failure() -> ConnectResponse {
+        ConnectResponse {
             reply: RESP_GENERAL_FAILURE,
             address: Address::IPv4([0, 0, 0, 0]),
             port: 0,
         }
     }
 
-    pub fn unsupported_address() -> Response {
-        Response {
+    pub fn unsupported_address() -> ConnectResponse {
+        ConnectResponse {
             reply: RESP_ADDRESS_NOT_SUPPORTED,
             address: Address::IPv4([0, 0, 0, 0]),
             port: 0,
         }
     }
 
-    pub(crate) fn unsupported_command() -> Response {
-        Response {
+    pub(crate) fn unsupported_command() -> ConnectResponse {
+        ConnectResponse {
             reply: RESP_COMMAND_NOT_SUPPORTED,
             address: Address::IPv4([0, 0, 0, 0]),
             port: 0,
         }
     }
+}
 
-    pub fn to_buf(&self) -> Vec<u8> {
-        [
-            vec![VERSION, self.reply, 0x0 as u8],
-            match &self.address {
-                Address::IPv4(a) => [vec![ATYPE_IPV4], Vec::from(*a)].concat(),
-
-                Address::IPv6(a) => [vec![ATYPE_IPV6], Vec::from(*a)].concat(),
-                Address::DNS(a) => {
-                    [vec![ATYPE_DNS, a.len() as u8], Vec::from(a.as_bytes())].concat()
-                }
-            },
-            Vec::from(self.port.to_be_bytes()),
-        ]
-        .concat()
+impl From<&Errors> for ConnectResponse {
+    fn from(value: &Errors) -> Self {
+        match value {
+            Errors::UnsupportedCommand(_) => ConnectResponse::unsupported_command(),
+            Errors::UnsupportedAddressType(_) => ConnectResponse::unsupported_address(),
+        }
     }
 }

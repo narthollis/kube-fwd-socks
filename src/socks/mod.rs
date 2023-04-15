@@ -4,6 +4,16 @@ use tracing::{debug, error, info, warn};
 mod v4;
 mod v5;
 
+pub(crate) trait Request {
+    async fn parse(stream: &mut (impl AsyncReadExt + Unpin)) -> anyhow::Result<Self>
+    where
+        Self: std::marker::Sized;
+}
+
+pub(crate) trait Response {
+    async fn send(&self, stream: &mut (impl AsyncWrite + Unpin)) -> anyhow::Result<()>;
+}
+
 pub(crate) async fn handle(
     mut client_conn: impl AsyncRead + AsyncWrite + Unpin,
 ) -> anyhow::Result<()> {
@@ -73,83 +83,45 @@ async fn handle_v4(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyh
 }
 
 async fn handle_v5(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyhow::Result<()> {
-    let method_count = client_conn.read_u8().await?;
+    let auth_request: v5::AuthRequest = v5::AuthRequest::parse(&mut client_conn).await?;
 
-    let mut methods: Vec<u8> = vec![0; method_count as usize];
-    client_conn.read_exact(&mut methods).await?;
-    if !methods.contains(&v5::AUTH_NOT_REQUIRED) {
-        let resp: [u8; 2] = v5::AuthResponse::none().to_buf();
-        client_conn.write_all(&resp).await?;
+    if !auth_request.contains(&v5::AuthMethods::NotRequired) {
+        v5::AuthResponse::none().send(&mut client_conn).await?;
         return Ok(());
     }
-    client_conn
-        .write_all(&v5::AuthResponse::not_required().to_buf())
+
+    v5::AuthResponse::not_required()
+        .send(&mut client_conn)
         .await?;
 
-    let _ver = client_conn.read_u8().await?;
-    let cmd = client_conn.read_u8().await?;
-    let _rsv = client_conn.read_u8().await?;
-    let atype = client_conn.read_u8().await?;
+    let req = match v5::CommandRequest::parse(&mut client_conn).await {
+        Ok(c) => Ok(c),
+        Err(e) => match e.downcast_ref::<v5::Errors>() {
+            Some(e) => {
+                error!(error = ?e, "command parse failed");
+                let resp: v5::ConnectResponse = e.into();
+                resp.send(&mut client_conn).await?;
+                return Ok(());
+            }
+            None => Err(e),
+        },
+    }?;
 
-    match cmd {
-        v5::CMD_CONNECT => {}
-        v5::CMD_BIND => {
-            error!(?cmd, "unsupported command");
-            client_conn
-                .write_all(&v5::Response::unsupported_command().to_buf())
+    info!(request = ?req, "valid v5 command");
+
+    match req.command {
+        v5::Command::Connect => {
+            v5::ConnectResponse::success(req.address, req.port)
+                .send(&mut client_conn)
                 .await?;
-            return Ok(());
-        }
-        v5::CMD_UDP_ASSOCIATE => {
-            error!(?cmd, "unsupported command");
-            client_conn
-                .write_all(&v5::Response::unsupported_command().to_buf())
-                .await?;
-            return Ok(());
         }
         _ => {
-            error!(?cmd, "unsupported command");
-            client_conn
-                .write_all(&v5::Response::unsupported_command().to_buf())
+            warn!(?req.command, "unsupported command");
+            v5::ConnectResponse::unsupported_command()
+                .send(&mut client_conn)
                 .await?;
-            return Ok(());
-        }
-    }
-
-    let address = match atype {
-        v5::ATYPE_IPV4 => {
-            let mut addr: [u8; 4] = [0; 4];
-            client_conn.read_exact(&mut addr).await?;
-            v5::Address::IPv4(addr)
-        }
-        v5::ATYPE_IPV6 => {
-            let mut addr: [u8; 16] = [0; 16];
-            client_conn.read_exact(&mut addr).await?;
-            v5::Address::IPv6(addr)
-        }
-        v5::ATYPE_DNS => {
-            let size = client_conn.read_u8().await?;
-            let mut buf: Vec<u8> = vec![0; size as usize];
-            client_conn.read_exact(&mut buf).await?;
-
-            v5::Address::DNS(String::from_utf8(buf)?)
-        }
-        _ => {
-            error!(?atype, "unsupported address type");
-            client_conn
-                .write_all(&v5::Response::unsupported_address().to_buf())
-                .await?;
-            return Ok(());
         }
     };
-
-    let port = client_conn.read_u16().await?;
-
-    info!(?address, ?port, "v5 connection");
-
-    client_conn
-        .write_all(&v5::Response::success(address, port).to_buf())
-        .await?;
 
     Ok(())
 }
