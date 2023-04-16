@@ -10,8 +10,18 @@ pub(crate) trait Request {
         Self: std::marker::Sized;
 }
 
-pub(crate) trait Response {
-    async fn send(&self, stream: &mut (impl AsyncWrite + Unpin)) -> anyhow::Result<()>;
+trait LocalAsyncReadWriteExt {
+    async fn receive<M: Request>(&mut self) -> anyhow::Result<M>;
+    async fn send<'a, I: Into<Vec<u8>>>(&mut self, v: I) -> std::io::Result<()>;
+}
+impl<T: AsyncRead + AsyncWrite + Unpin> LocalAsyncReadWriteExt for T {
+    async fn send<'a, I: Into<Vec<u8>>>(&mut self, v: I) -> std::io::Result<()> {
+        self.write_all(&v.into()).await
+    }
+
+    async fn receive<M: Request>(&mut self) -> anyhow::Result<M> {
+        M::parse(self).await
+    }
 }
 
 pub(crate) async fn handle(
@@ -82,25 +92,23 @@ async fn handle_v4(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyh
     Ok(())
 }
 
-async fn handle_v5(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyhow::Result<()> {
-    let auth_request: v5::AuthRequest = v5::AuthRequest::parse(&mut client_conn).await?;
+async fn handle_v5(mut client: impl AsyncRead + AsyncWrite + Unpin) -> anyhow::Result<()> {
+    let auth_request = client.receive::<v5::AuthRequest>().await?;
 
     if !auth_request.contains(&v5::AuthMethods::NotRequired) {
-        v5::AuthResponse::none().send(&mut client_conn).await?;
+        client.send(v5::AuthResponse::none()).await?;
         return Ok(());
     }
 
-    v5::AuthResponse::not_required()
-        .send(&mut client_conn)
-        .await?;
+    client.send(v5::AuthResponse::not_required()).await?;
 
-    let req = match v5::CommandRequest::parse(&mut client_conn).await {
+    let req = match client.receive::<v5::CommandRequest>().await {
         Ok(c) => Ok(c),
         Err(e) => match e.downcast_ref::<v5::Errors>() {
             Some(e) => {
                 error!(error = ?e, "command parse failed");
                 let resp: v5::ConnectResponse = e.into();
-                resp.send(&mut client_conn).await?;
+                client.send(resp).await?;
                 return Ok(());
             }
             None => Err(e),
@@ -111,14 +119,14 @@ async fn handle_v5(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyh
 
     match req.command {
         v5::Command::Connect => {
-            v5::ConnectResponse::success(req.address, req.port)
-                .send(&mut client_conn)
+            client
+                .send(v5::ConnectResponse::success(req.address, req.port))
                 .await?;
         }
         _ => {
             warn!(?req.command, "unsupported command");
-            v5::ConnectResponse::unsupported_command()
-                .send(&mut client_conn)
+            client
+                .send(v5::ConnectResponse::unsupported_command())
                 .await?;
         }
     };

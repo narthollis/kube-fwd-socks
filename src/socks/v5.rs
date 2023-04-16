@@ -2,9 +2,8 @@
 
 use anyhow::Ok;
 use int_enum::IntEnum;
-use tokio::io::AsyncWriteExt;
 
-use super::{Request, Response};
+use super::Request;
 
 pub const VERSION: u8 = 5;
 
@@ -108,10 +107,9 @@ impl AuthResponse {
     }
 }
 
-impl Response for AuthResponse {
-    async fn send(&self, stream: &mut (impl tokio::io::AsyncWrite + Unpin)) -> anyhow::Result<()> {
-        stream.write_all(&[VERSION, self.method as u8]).await?;
-        Ok(())
+impl From<AuthResponse> for Vec<u8> {
+    fn from(value: AuthResponse) -> Self {
+        vec![VERSION, value.method as u8]
     }
 }
 
@@ -122,17 +120,14 @@ pub enum Address {
     Dns(String),
 }
 
-impl Response for Address {
-    async fn send(&self, stream: &mut (impl tokio::io::AsyncWrite + Unpin)) -> anyhow::Result<()> {
-        let buf = match &self {
-            Address::IPv4(a) => [vec![ATYPE_IPV4], Vec::from(*a)].concat(),
+impl From<Address> for Vec<u8> {
+    fn from(value: Address) -> Self {
+        match value {
+            Address::IPv4(a) => [vec![ATYPE_IPV4], Vec::from(a)].concat(),
 
-            Address::IPv6(a) => [vec![ATYPE_IPV6], Vec::from(*a)].concat(),
+            Address::IPv6(a) => [vec![ATYPE_IPV6], Vec::from(a)].concat(),
             Address::Dns(a) => [vec![ATYPE_DNS, a.len() as u8], Vec::from(a.as_bytes())].concat(),
-        };
-        stream.write_all(&buf).await?;
-
-        Ok(())
+        }
     }
 }
 
@@ -198,15 +193,13 @@ pub struct ConnectResponse {
     pub port: u16,
 }
 
-impl Response for ConnectResponse {
-    async fn send(&self, stream: &mut (impl tokio::io::AsyncWrite + Unpin)) -> anyhow::Result<()> {
-        stream.write_all(&[VERSION, self.reply, 0x0_u8]).await?;
-        self.address.send(stream).await?;
-        stream
-            .write_all(&Vec::from(self.port.to_be_bytes()))
-            .await?;
+impl From<ConnectResponse> for Vec<u8> {
+    fn from(value: ConnectResponse) -> Self {
+        let mut resp = vec![VERSION, value.reply, 0x0_u8];
+        resp.append(&mut value.address.into());
+        resp.extend_from_slice(&value.port.to_be_bytes());
 
-        Ok(())
+        resp
     }
 }
 
