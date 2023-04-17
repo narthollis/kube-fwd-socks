@@ -1,11 +1,12 @@
+#![allow(incomplete_features)]
 #![feature(async_fn_in_trait)]
 
 pub(crate) mod socks;
 
-use futures::{StreamExt, TryStreamExt};
-use std::net::SocketAddr;
+use futures::{StreamExt as FuturesStreamExt, TryStreamExt};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::net::TcpListener;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::{wrappers::TcpListenerStream, StreamExt};
 
 use tracing::{error, info, info_span, trace, Instrument};
 
@@ -22,11 +23,13 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    let socket = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 1080))).await?;
+    let socket_v4 = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 1080))).await?;
+    let socket_v6 = TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, 1080))).await?;
 
-    info!(address = ?socket.local_addr()?, "Bound, Ctrl+C to stop");
+    info!(address = ?[socket_v4.local_addr()?, socket_v6.local_addr()? ], "Bound, Ctrl+C to stop");
 
-    TcpListenerStream::new(socket)
+    TcpListenerStream::new(socket_v4)
+        .merge(TcpListenerStream::new(socket_v6))
         .take_until(tokio::signal::ctrl_c())
         .try_for_each(|client_conn| async {
             let _connection_span = info_span!(

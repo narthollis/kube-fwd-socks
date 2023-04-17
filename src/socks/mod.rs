@@ -4,30 +4,11 @@ use tracing::{debug, error, info, warn};
 mod v4;
 mod v5;
 
-pub(crate) trait Request {
-    async fn parse(stream: &mut (impl AsyncReadExt + Unpin)) -> anyhow::Result<Self>
-    where
-        Self: std::marker::Sized;
-}
+pub(crate) async fn handle(client_conn: tokio::net::TcpStream) -> anyhow::Result<()> {
+    let mut buf = [0x0_u8; 1];
+    client_conn.peek(&mut buf).await?;
 
-trait LocalAsyncReadWriteExt {
-    async fn receive<M: Request>(&mut self) -> anyhow::Result<M>;
-    async fn send<'a, I: Into<Vec<u8>>>(&mut self, v: I) -> std::io::Result<()>;
-}
-impl<T: AsyncRead + AsyncWrite + Unpin> LocalAsyncReadWriteExt for T {
-    async fn send<'a, I: Into<Vec<u8>>>(&mut self, v: I) -> std::io::Result<()> {
-        self.write_all(&v.into()).await
-    }
-
-    async fn receive<M: Request>(&mut self) -> anyhow::Result<M> {
-        M::parse(self).await
-    }
-}
-
-pub(crate) async fn handle(
-    mut client_conn: impl AsyncRead + AsyncWrite + Unpin,
-) -> anyhow::Result<()> {
-    let ver = client_conn.read_u8().await?;
+    let ver = buf[0];
 
     debug!("handling connection with version {}", ver);
 
@@ -41,6 +22,8 @@ pub(crate) async fn handle(
 }
 
 async fn handle_v4(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyhow::Result<()> {
+    let _ver = client_conn.read_u8().await?;
+
     let method = client_conn.read_u8().await?;
     let mut dest_addr: [u8; 4] = [0; 4];
     let dest_port = client_conn.read_u16().await?;
@@ -104,15 +87,13 @@ async fn handle_v5(mut client: impl AsyncRead + AsyncWrite + Unpin) -> anyhow::R
 
     let req = match client.receive::<v5::CommandRequest>().await {
         Ok(c) => Ok(c),
-        Err(e) => match e.downcast_ref::<v5::Errors>() {
-            Some(e) => {
-                error!(error = ?e, "command parse failed");
-                let resp: v5::ConnectResponse = e.into();
-                client.send(resp).await?;
-                return Ok(());
-            }
-            None => Err(e),
-        },
+        Err(v5::ParseError::ProtocolError(e)) => {
+            error!(error = ?e, "command parse failed");
+            let resp: v5::ConnectResponse = e.into();
+            client.send(resp).await?;
+            return Ok(());
+        }
+        Err(e) => Err(e),
     }?;
 
     info!(request = ?req, "valid v5 command");
@@ -149,6 +130,27 @@ async fn read_until_null(stream: &mut (impl AsyncRead + Unpin)) -> anyhow::Resul
     }
 
     Ok(resp)
+}
+
+pub(crate) trait Request {
+    type Error;
+    async fn parse(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<Self, Self::Error>
+    where
+        Self: std::marker::Sized;
+}
+
+trait LocalAsyncReadWriteExt {
+    async fn receive<M: Request>(&mut self) -> Result<M, M::Error>;
+    async fn send<'a, I: Into<Vec<u8>>>(&mut self, v: I) -> std::io::Result<()>;
+}
+impl<T: AsyncRead + AsyncWrite + Unpin> LocalAsyncReadWriteExt for T {
+    async fn send<'a, I: Into<Vec<u8>>>(&mut self, v: I) -> std::io::Result<()> {
+        self.write_all(&v.into()).await
+    }
+
+    async fn receive<M: Request>(&mut self) -> Result<M, M::Error> {
+        M::parse(self).await
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
