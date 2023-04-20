@@ -1,10 +1,17 @@
+use kube::Client;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, error, info, warn};
 
+use crate::socks::resolver::PodResolver;
+
+mod resolver;
 mod v4;
 mod v5;
 
-pub(crate) async fn handle(client_conn: tokio::net::TcpStream) -> anyhow::Result<()> {
+pub(crate) async fn handle(
+    client_conn: tokio::net::TcpStream,
+    kube_client: Client,
+) -> anyhow::Result<()> {
     let mut buf = [0x0_u8; 1];
     client_conn.peek(&mut buf).await?;
 
@@ -12,11 +19,16 @@ pub(crate) async fn handle(client_conn: tokio::net::TcpStream) -> anyhow::Result
 
     debug!("handling connection with version {}", ver);
 
-    match ver {
+    let mut resolver = PodResolver::new(kube_client);
+
+    let res = match ver {
         v4::VERSION => handle_v4(client_conn).await,
-        v5::VERSION => handle_v5(client_conn).await,
+        v5::VERSION => handle_v5(client_conn, &mut resolver).await,
         _ => Err(Errors::UnsupportedVersion(ver).into()),
-    }?;
+    };
+
+    resolver.join().await?;
+    res?;
 
     Ok(())
 }
@@ -75,7 +87,10 @@ async fn handle_v4(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyh
     Ok(())
 }
 
-async fn handle_v5(mut client: impl AsyncRead + AsyncWrite + Unpin) -> anyhow::Result<()> {
+async fn handle_v5(
+    mut client: impl AsyncRead + AsyncWrite + Unpin,
+    resolver: &mut PodResolver,
+) -> anyhow::Result<()> {
     let auth_request = client.receive::<v5::AuthRequest>().await?;
 
     if !auth_request.contains(&v5::AuthMethods::NotRequired) {
@@ -98,19 +113,73 @@ async fn handle_v5(mut client: impl AsyncRead + AsyncWrite + Unpin) -> anyhow::R
 
     info!(request = ?req, "valid v5 command");
 
-    match req.command {
-        v5::Command::Connect => {
-            client
-                .send(v5::ConnectResponse::success(req.address, req.port))
-                .await?;
-        }
-        _ => {
-            warn!(?req.command, "unsupported command");
+    if req.command != v5::Command::Connect {
+        warn!(?req.command, "unsupported command");
+        client
+            .send(v5::ConnectResponse::unsupported_command())
+            .await?;
+        return Ok(());
+    }
+
+    let address = match req.address {
+        v5::Address::IpAddr(_) => {
+            warn!(?req.address, "unsupported address");
             client
                 .send(v5::ConnectResponse::unsupported_command())
                 .await?;
+            return Ok(());
+        }
+        v5::Address::Dns(ref a) => a.clone(),
+    };
+
+    let mut pod_stream = match resolver.forwarder(address.as_str(), req.port).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = ?e, "failed to resolve and open forward stream");
+            client
+                .send(match e {
+                    resolver::Errors::PodNotFound {
+                        namespace: _,
+                        pod: _,
+                    } => v5::ConnectResponse::host_unreachable(req.address, req.port),
+                    resolver::Errors::ServiceNotFound {
+                        namespace: _,
+                        service: _,
+                    } => v5::ConnectResponse::host_unreachable(req.address, req.port),
+                    resolver::Errors::NamedServicePodsNotFound {
+                        namespace: _,
+                        service: _,
+                        pod: _,
+                    } => v5::ConnectResponse::host_unreachable(req.address, req.port),
+                    resolver::Errors::PortNotFound(_, _, _) => {
+                        v5::ConnectResponse::connection_refused(req.address, req.port)
+                    }
+                    resolver::Errors::UnsupportedAddress(_) => {
+                        v5::ConnectResponse::unsupported_address()
+                    }
+                    resolver::Errors::ForwardFailed(_) => v5::ConnectResponse::geneal_failure(),
+                    resolver::Errors::LookupFailed(_) => v5::ConnectResponse::geneal_failure(),
+                    resolver::Errors::ServiceInvalid {
+                        namespace: _,
+                        service: _,
+                        reason: _,
+                    } => v5::ConnectResponse::geneal_failure(),
+                    resolver::Errors::ServiceNoReadyPods {
+                        namespace: _,
+                        service: _,
+                    } => v5::ConnectResponse::connection_refused(req.address, req.port),
+                })
+                .await?;
+            return Ok(());
         }
     };
+
+    client
+        .send(v5::ConnectResponse::success(req.address, req.port))
+        .await?;
+
+    tokio::io::copy_bidirectional(&mut client, &mut pod_stream).await?;
+    drop(pod_stream);
 
     Ok(())
 }

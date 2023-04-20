@@ -8,6 +8,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::net::TcpListener;
 use tokio_stream::{wrappers::TcpListenerStream, StreamExt};
 
+use kube::Client;
+
 use tracing::{error, info, info_span, trace, Instrument};
 
 #[tokio::main]
@@ -20,8 +22,10 @@ async fn main() -> anyhow::Result<()> {
         .with_source_location(false);
     tracing_subscriber::fmt()
         .event_format(format)
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(tracing::Level::INFO)
         .init();
+
+    let client = Client::try_default().await?;
 
     let socket_v4 = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 1080))).await?;
     let socket_v6 = TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, 1080))).await?;
@@ -39,9 +43,11 @@ async fn main() -> anyhow::Result<()> {
             .entered();
             trace!("accepted new connection");
 
+            let c = client.clone();
+
             tokio::spawn(
                 async move {
-                    if let Err(e) = socks::handle(client_conn).await {
+                    if let Err(e) = socks::handle(client_conn, c).await {
                         error!(
                             error = e.as_ref() as &dyn std::error::Error,
                             "failed to forward connection"

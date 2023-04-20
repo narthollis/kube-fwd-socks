@@ -21,15 +21,11 @@ pub const ATYPE_IPV6: u8 = 0x04;
 pub const ATYPE_DNS: u8 = 0x03;
 
 pub const RESP_SUCCEEDED: u8 = 0x00;
-#[allow(dead_code)]
 pub const RESP_GENERAL_FAILURE: u8 = 0x01;
 #[allow(dead_code)]
 pub const RESP_DENIED: u8 = 0x02;
-#[allow(dead_code)]
 pub const RESP_NETWORK_UNREACHABLE: u8 = 0x03;
-#[allow(dead_code)]
 pub const RESP_HOST_UNREACHABLE: u8 = 0x04;
-#[allow(dead_code)]
 pub const RESP_CONNECTION_REFUSED: u8 = 0x05;
 #[allow(dead_code)]
 pub const RESP_TTL_EXPIRED: u8 = 0x06;
@@ -248,12 +244,36 @@ impl ConnectResponse {
             port,
         }
     }
-    #[allow(dead_code)]
+
     pub fn geneal_failure() -> ConnectResponse {
         ConnectResponse {
             reply: RESP_GENERAL_FAILURE,
             address: Ipv4Addr::UNSPECIFIED.into(),
             port: 0,
+        }
+    }
+
+    pub fn network_unreachable(address: Address, port: u16) -> ConnectResponse {
+        ConnectResponse {
+            reply: RESP_NETWORK_UNREACHABLE,
+            address,
+            port,
+        }
+    }
+
+    pub fn host_unreachable(address: Address, port: u16) -> ConnectResponse {
+        ConnectResponse {
+            reply: RESP_HOST_UNREACHABLE,
+            address,
+            port,
+        }
+    }
+
+    pub fn connection_refused(address: Address, port: u16) -> ConnectResponse {
+        ConnectResponse {
+            reply: RESP_CONNECTION_REFUSED,
+            address,
+            port,
         }
     }
 
