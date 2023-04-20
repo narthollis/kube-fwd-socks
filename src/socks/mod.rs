@@ -22,7 +22,7 @@ pub(crate) async fn handle(
     let mut resolver = PodResolver::new(kube_client);
 
     let res = match ver {
-        v4::VERSION => handle_v4(client_conn).await,
+        v4::VERSION => handle_v4(client_conn, &mut resolver).await,
         v5::VERSION => handle_v5(client_conn, &mut resolver).await,
         _ => Err(Errors::UnsupportedVersion(ver).into()),
     };
@@ -33,7 +33,10 @@ pub(crate) async fn handle(
     Ok(())
 }
 
-async fn handle_v4(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyhow::Result<()> {
+async fn handle_v4(
+    mut client_conn: impl AsyncRead + AsyncWrite + Unpin,
+    resolver: &mut PodResolver,
+) -> anyhow::Result<()> {
     let _ver = client_conn.read_u8().await?;
 
     let method = client_conn.read_u8().await?;
@@ -68,9 +71,23 @@ async fn handle_v4(mut client_conn: impl AsyncRead + AsyncWrite + Unpin) -> anyh
             addr, "client requested 4a - we should be able to handle this"
         );
 
+        let mut pod_stream = match resolver.forwarder(addr.as_str(), dest_port).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = ?e, "failed to resolve and open forward stream");
+                client_conn
+                    .write_all(&v4::Response::rejected_or_failed(dest_port, dest_addr).to_buf())
+                    .await?;
+                return Ok(());
+            }
+        };
+
         client_conn
             .write_all(&v4::Response::granted(dest_port, dest_addr).to_buf())
             .await?;
+
+        tokio::io::copy_bidirectional(&mut client_conn, &mut pod_stream).await?;
+        drop(pod_stream);
     } else {
         warn!(
             ?dest_port,

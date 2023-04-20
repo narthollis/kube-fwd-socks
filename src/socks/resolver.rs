@@ -255,7 +255,7 @@ impl PodResolver {
 
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
 
-        if let Some(pod) = pods.get_opt(pod_name).await.map_err(Errors::LookupFailed)? {
+        if let Some(_pod) = pods.get_opt(pod_name).await.map_err(Errors::LookupFailed)? {
             // todo try and find port on pod or error
         } else {
             return Err(Errors::PodNotFound {
