@@ -6,9 +6,19 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-kube = { version = "0.82.0", default-features = false, features = ["client", "ws", "rustls-tls"] }
-k8s-openapi = { version = "0.18.0", default-features = false, features = ["v1_26"] }
-tokio = { version = "1.32.0", default-features = false, features = ["rt-multi-thread", "net", "macros"] }
+kube = { version = "0.82.0", default-features = false, features = [
+    "client",
+    "ws",
+    "rustls-tls",
+] }
+k8s-openapi = { version = "0.18.0", default-features = false, features = [
+    "v1_26",
+] }
+tokio = { version = "1.32.0", default-features = false, features = [
+    "rt-multi-thread",
+    "net",
+    "macros",
+] }
 tokio-stream = { version = "0.1.12", features = ["net"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
