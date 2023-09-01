@@ -12,6 +12,11 @@
       "matchUpdateTypes": ["minor", "patch"],
       "matchCurrentVersion": "!/^0/",
       "automerge": true
+    },
+    {
+      "matchPackagePatterns": ["kube", "k8s-openapi"],
+      "matchManagers": ["cargo"],
+      "groupName": "rust kube"
     }
   ]
 }
