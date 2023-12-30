@@ -23,7 +23,7 @@ tokio-stream = { version = "0.1.14", features = ["net"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 anyhow = "1.0.77"
-thiserror = "1.0.52"
+thiserror = "1.0.53"
 futures = "0.3.29"
 int-enum = "0.5.0"
 
