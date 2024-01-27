@@ -1,6 +1,5 @@
 // https://www.rfc-editor.org/rfc/rfc1928
 
-use int_enum::IntEnum;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use super::Request;
@@ -101,7 +100,7 @@ impl Request for AuthRequest {
 
         let requests = buf
             .into_iter()
-            .filter_map(|v| AuthMethods::from_int(v).ok())
+            .filter_map(|v| AuthMethods::try_from(v).ok())
             .collect();
 
         Ok(AuthRequest { requests })
@@ -182,8 +181,8 @@ impl Request for CommandRequest {
             return Err(Errors::General(super::Errors::UnsupportedVersion(ver).into()).into());
         }
 
-        let command = Command::from_int(stream.read_u8().await?)
-            .map_err(|e| Errors::UnsupportedCommand(e.value()))?;
+        let command = Command::try_from(stream.read_u8().await?)
+            .map_err(Errors::UnsupportedCommand)?;
 
         // This next byte is very literally a unused reserved byte, just read and discard
         let _rsv = stream.read_u8().await?;
