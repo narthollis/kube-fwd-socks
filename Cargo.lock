@@ -514,9 +514,9 @@ dependencies = [
 
 [[package]]
 name = "int-enum"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b68d2529309f2a6f06a25be89f1b8b83723f63239864c57da193e0086df585c0"
+checksum = "b2e6a45c18bc4873fef226acaabbc8cfe1e28c6778d6de4ea58c7cf903339db0"
 dependencies = [
  "proc-macro2",
  "proc-macro2-diagnostics",
