@@ -22,7 +22,7 @@ tokio = { version = "1.37.0", default-features = false, features = [
 tokio-stream = { version = "0.1.15", features = ["net"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-anyhow = "1.0.81"
+anyhow = "1.0.82"
 thiserror = "1.0.58"
 futures = "0.3.30"
 int-enum = "1.1.1"
